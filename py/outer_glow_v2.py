@@ -29,10 +29,10 @@ class OuterGlowV2:
             },
             "optional": {
                 "layer_mask": ("MASK",),  #
-                "opacity": ("INT", {"default": 100, "min": 0, "max": 100, "step": 1, "forceInput": True}),  # 透明度
-                "brightness": ("INT", {"default": 5, "min": 2, "max": 20, "step": 1, "forceInput": True}),  # 迭代
-                "glow_range": ("INT", {"default": 48, "min": -9999, "max": 9999, "step": 1, "forceInput": True}),  # 扩张
-                "blur": ("INT", {"default": 25, "min": 0, "max": 9999, "step": 1, "forceInput": True}),  # 扩张
+                "opacity": ("INT", {"default": 100, "min": 0, "max": 100, "step": 1}),  # 透明度
+                "brightness": ("INT", {"default": 5, "min": 2, "max": 20, "step": 1}),  # 迭代
+                "glow_range": ("INT", {"default": 48, "min": -9999, "max": 9999, "step": 1}),  # 扩张
+                "blur": ("INT", {"default": 25, "min": 0, "max": 9999, "step": 1}),  # 扩张
             }
         }
 

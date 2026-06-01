@@ -89,11 +89,11 @@ class OuterGlowV2:
             blur_factor = blur / 20.0
             grow = glow_range
             for x in range(brightness):
-                 blur_val = int(grow * blur_factor)
-                 _color = step_color(glow_color, light_color, brightness, x)
-                 glow_mask = expand_mask(image2mask(_mask), grow, blur_val)
-                 color_image = Image.new("RGB", _layer.size, color=_color)
-                 alpha = tensor2pil(glow_mask).convert('L')
+                blur_val = int(grow * blur_factor)
+                _color = step_color(glow_color, light_color, brightness, x)
+                glow_mask = expand_mask(image2mask(_mask), grow, blur_val)
+                color_image = Image.new("RGB", _layer.size, color=_color)
+                alpha = tensor2pil(glow_mask).convert('L')
                 _glow = chop_image_v2(_canvas, color_image, blend_mode, int(step_value(1, opacity, brightness, x)))
                 _canvas.paste(_glow.convert('RGB'), mask=alpha)
                 grow = grow - int(glow_range / brightness)

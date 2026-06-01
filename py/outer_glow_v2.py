@@ -71,7 +71,6 @@ class OuterGlowV2:
             log(f"Error: {self.NODE_NAME} skipped, because the available mask is not found.", message_type='error')
             return (background_image,)
         max_batch = max(len(b_images), len(l_images), len(l_masks))
-        blur_factor = blur / 20.0
         for i in range(max_batch):
             background_image = b_images[i] if i < len(b_images) else b_images[-1]
             layer_image = l_images[i] if i < len(l_images) else l_images[-1]
@@ -82,10 +81,15 @@ class OuterGlowV2:
             if _mask.size != _layer.size:
                 _mask = Image.new('L', _layer.size, 'white')
                 log(f"Warning: {self.NODE_NAME} mask mismatch, dropped!", message_type='warning')
-            glow_range = glow_range[0] if isinstance(glow_range, (list, tuple)) else glow_range
-            brightness = brightness[0] if isinstance(brightness, (list, tuple)) else brightness
-            blur = blur[0] if isinstance(blur, (list, tuple)) else blur
-            opacity = opacity[0] if isinstance(opacity, (list, tuple)) else opacity
+            glow_range_list = glow_range if isinstance(glow_range, (list, tuple)) else [glow_range] * max_batch
+            brightness_list = brightness if isinstance(brightness, (list, tuple)) else [brightness] * max_batch
+            blur_list = blur if isinstance(blur, (list, tuple)) else [blur] * max_batch
+            opacity_list = opacity if isinstance(opacity, (list, tuple)) else [opacity] * max_batch
+            
+            glow_range = glow_range_list[i] if i < len(glow_range_list) else glow_range_list[-1]
+            brightness = brightness_list[i] if i < len(brightness_list) else brightness_list[-1]
+            blur = blur_list[i] if i < len(blur_list) else blur_list[-1]
+            opacity = opacity_list[i] if i < len(opacity_list) else opacity_list[-1]
             blur_factor = blur / 20.0
             grow = glow_range
             for x in range(brightness):

@@ -24,15 +24,15 @@ class OuterGlowV2:
                 "layer_image": ("IMAGE",),  #
                 "invert_mask": ("BOOLEAN", {"default": True}),  # 反转mask
                 "blend_mode": (chop_mode_list,),  # 混合模式
-                "opacity": ("INT", {"default": 100, "min": 0, "max": 100, "step": 1}),  # 透明度
-                "brightness": ("INT", {"default": 5, "min": 2, "max": 20, "step": 1}),  # 迭代
-                "glow_range": ("INT", {"default": 48, "min": -9999, "max": 9999, "step": 1}),  # 扩张
-                "blur": ("INT", {"default": 25, "min": 0, "max": 9999, "step": 1}),  # 扩张
                 "light_color": ("STRING", {"default": "#FFBF30"}),  # 光源中心颜色
                 "glow_color": ("STRING", {"default": "#FE0000"}),  # 辉光外围颜色
             },
             "optional": {
                 "layer_mask": ("MASK",),  #
+                "opacity": ("INT", {"default": 100, "min": 0, "max": 100, "step": 1, "forceInput": True}),  # 透明度
+                "brightness": ("INT", {"default": 5, "min": 2, "max": 20, "step": 1, "forceInput": True}),  # 迭代
+                "glow_range": ("INT", {"default": 48, "min": -9999, "max": 9999, "step": 1, "forceInput": True}),  # 扩张
+                "blur": ("INT", {"default": 25, "min": 0, "max": 9999, "step": 1, "forceInput": True}),  # 扩张
             }
         }
 
@@ -42,10 +42,10 @@ class OuterGlowV2:
     CATEGORY = '😺dzNodes/LayerStyle'
 
     def outer_glow_v2(self, background_image, layer_image,
-                  invert_mask, blend_mode, opacity,
-                  brightness, glow_range, blur, light_color, glow_color,
-                  layer_mask=None
-                  ):
+            invert_mask, blend_mode, light_color, glow_color,
+            opacity=100, brightness=5, glow_range=48, blur=25,
+            layer_mask=None
+            ):
 
         b_images = []
         l_images = []

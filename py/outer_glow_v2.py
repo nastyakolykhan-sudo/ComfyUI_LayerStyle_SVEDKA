@@ -87,8 +87,8 @@ class OuterGlowV2:
                 grow_val = grow[0] if isinstance(grow, (list, tuple)) else grow
                 blur = int(grow_val * blur_factor)
                 _color = step_color(glow_color, light_color, brightness, x)
-                glow_mask = expand_mask(image2mask(_mask), grow, blur)  #扩张，模糊
-                # 合成glow
+                grow_val = grow[0] if isinstance(grow, (list, tuple)) else grow
+                glow_mask = expand_mask(image2mask(_mask), grow_val, blur)
                 color_image = Image.new("RGB", _layer.size, color=_color)
                 alpha = tensor2pil(glow_mask).convert('L')
                 _glow = chop_image_v2(_canvas, color_image, blend_mode, int(step_value(1, opacity, brightness, x)))

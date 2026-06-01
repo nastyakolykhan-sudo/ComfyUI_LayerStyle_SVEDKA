@@ -84,7 +84,8 @@ class OuterGlowV2:
                 log(f"Warning: {self.NODE_NAME} mask mismatch, dropped!", message_type='warning')
             grow = glow_range
             for x in range(brightness):
-                blur = int(grow * blur_factor)
+                grow_val = grow[0] if isinstance(grow, (list, tuple)) else grow
+                blur = int(grow_val * blur_factor)
                 _color = step_color(glow_color, light_color, brightness, x)
                 glow_mask = expand_mask(image2mask(_mask), grow, blur)  #扩张，模糊
                 # 合成glow

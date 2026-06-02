@@ -51,34 +51,44 @@ class CropByMaskV2:
             l_images.append(torch.unsqueeze(l, 0))
         if mask.dim() == 2:
             mask = torch.unsqueeze(mask, 0)
-        # 如果有多张mask输入，使用第一张
-        if mask.shape[0] > 1:
-            log(f"Warning: Multiple mask inputs, using the first.", message_type='warning')
-            mask = torch.unsqueeze(mask[0], 0)
         if invert_mask:
             mask = 1 - mask
-        l_masks.append(tensor2pil(torch.unsqueeze(mask, 0)).convert('L'))
+        for m in mask:
+            l_masks.append(tensor2pil(torch.unsqueeze(m, 0)).convert('L'))
 
-        _mask = mask2image(mask)
-        preview_image = tensor2pil(mask).convert('RGB')
+        canvas_width, canvas_height = tensor2pil(l_images[0]).convert('RGB').size
+
         if crop_box is None:
-            bluredmask = gaussian_blur(_mask, 20).convert('L')
-            x = 0
-            y = 0
-            width = 0
-            height = 0
-            if detect == "min_bounding_rect":
-                (x, y, w, h) = min_bounding_rect(bluredmask)
-            elif detect == "max_inscribed_rect":
-                (x, y, w, h) = max_inscribed_rect(bluredmask)
-            else:
-                (x, y, w, h) = mask_area(_mask)
+            # Compute bounding box per frame, then take the union across all frames
+            union_x1 = canvas_width
+            union_y1 = canvas_height
+            union_x2 = 0
+            union_y2 = 0
 
-            canvas_width, canvas_height = tensor2pil(torch.unsqueeze(image[0], 0)).convert('RGB').size
-            x1 = x - left_reserve if x - left_reserve > 0 else 0
-            y1 = y - top_reserve if y - top_reserve > 0 else 0
-            x2 = x + w + right_reserve if x + w + right_reserve < canvas_width else canvas_width
-            y2 = y + h + bottom_reserve if y + h + bottom_reserve < canvas_height else canvas_height
+            for m_pil in l_masks:
+                _mask_img = mask2image(image2mask(m_pil))
+                bluredmask = gaussian_blur(_mask_img, 20).convert('L')
+                if detect == "min_bounding_rect":
+                    (x, y, w, h) = min_bounding_rect(bluredmask)
+                elif detect == "max_inscribed_rect":
+                    (x, y, w, h) = max_inscribed_rect(bluredmask)
+                else:
+                    (x, y, w, h) = mask_area(_mask_img)
+
+                if w > 0 and h > 0:
+                    union_x1 = min(union_x1, x)
+                    union_y1 = min(union_y1, y)
+                    union_x2 = max(union_x2, x + w)
+                    union_y2 = max(union_y2, y + h)
+
+            # Fallback if no mask content found in any frame
+            if union_x2 == 0 or union_y2 == 0:
+                union_x1, union_y1, union_x2, union_y2 = 0, 0, canvas_width, canvas_height
+
+            x1 = max(union_x1 - left_reserve, 0)
+            y1 = max(union_y1 - top_reserve, 0)
+            x2 = min(union_x2 + right_reserve, canvas_width)
+            y2 = min(union_y2 + bottom_reserve, canvas_height)
 
             if round_to_multiple != 'None':
                 multiple = int(round_to_multiple)
@@ -88,18 +98,24 @@ class CropByMaskV2:
                 y1 = y1 - (height - (y2 - y1)) // 2
                 x2 = x1 + width
                 y2 = y1 + height
+            else:
+                width = x2 - x1
+                height = y2 - y1
 
-            log(f"{self.NODE_NAME}: Box detected. x={x1},y={y1},width={width},height={height}")
+            log(f"{self.NODE_NAME}: Union box across {len(l_masks)} frame(s). x={x1},y={y1},width={width},height={height}")
             crop_box = (x1, y1, x2, y2)
-            preview_image = draw_rect(preview_image, x, y, w, h, line_color="#F00000",
-                                      line_width=(w + h) // 100)
+
+        # Draw preview using the first mask frame
+        preview_image = l_masks[0].convert('RGB')
         preview_image = draw_rect(preview_image, crop_box[0], crop_box[1],
                                   crop_box[2] - crop_box[0], crop_box[3] - crop_box[1],
                                   line_color="#00F000",
                                   line_width=(crop_box[2] - crop_box[0] + crop_box[3] - crop_box[1]) // 200)
-        for i in range(len(l_images)):
-            _canvas = tensor2pil(l_images[i]).convert('RGB')
-            _mask = l_masks[0]
+
+        max_batch = max(len(l_images), len(l_masks))
+        for i in range(max_batch):
+            _canvas = tensor2pil(l_images[i] if i < len(l_images) else l_images[-1]).convert('RGB')
+            _mask = l_masks[i] if i < len(l_masks) else l_masks[-1]
             ret_images.append(pil2tensor(_canvas.crop(crop_box)))
             ret_masks.append(image2mask(_mask.crop(crop_box)))
 

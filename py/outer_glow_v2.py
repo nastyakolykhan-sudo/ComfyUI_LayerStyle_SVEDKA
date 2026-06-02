@@ -114,5 +114,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LayerStyle: OuterGlow V2": "LayerStyle: OuterGlow V2 SVEDKA"
+    "LayerStyle: OuterGlow V2": "LayerStyle: OuterGlow V2 CUSTOM"
 }

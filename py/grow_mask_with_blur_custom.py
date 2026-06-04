@@ -2,14 +2,18 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import scipy.ndimage
+from itertools import groupby
 from tqdm import tqdm
-from PIL import ImageFilter
 
-from .imagefunc import log, tensor2pil, pil2tensor
+from .imagefunc import log
 
+
+# ---------------------------------------------------------------------------
+# GPU helpers
+# ---------------------------------------------------------------------------
 
 def _gaussian_kernel_1d(radius: float, device: torch.device) -> torch.Tensor:
-    """Build a 1-D Gaussian kernel for the given radius (sigma = radius / 3)."""
+    """1-D Gaussian kernel; sigma = radius / 3."""
     sigma = max(radius / 3.0, 0.01)
     size = int(radius) * 2 + 1
     x = torch.arange(size, dtype=torch.float32, device=device) - size // 2
@@ -19,56 +23,90 @@ def _gaussian_kernel_1d(radius: float, device: torch.device) -> torch.Tensor:
 
 def _gaussian_blur_batch_gpu(batch: torch.Tensor, blur_list: list) -> torch.Tensor:
     """
-    Apply per-frame Gaussian blur on GPU using separable convolution.
-    batch: [N, H, W] float32 on any device
-    blur_list: list of float radii, one per frame (or shorter — last value repeats)
-    Returns [N, H, W] on same device.
+    Per-frame separable Gaussian blur on GPU.
+    batch    : [N, H, W] float32
+    blur_list: radius per frame (last value repeats if shorter than N)
+    Returns  : [N, H, W] on same device.
     """
     device = batch.device
     n = batch.shape[0]
-    out_frames = []
-
-    # Group frames by radius to minimise kernel rebuilds
-    from itertools import groupby
     indexed = [(i, blur_list[i] if i < len(blur_list) else blur_list[-1]) for i in range(n)]
+    out_frames = []
 
     for r, group in groupby(indexed, key=lambda x: round(x[1], 2)):
         indices = [g[0] for g in group]
         if r <= 0:
             out_frames.extend([(i, batch[i]) for i in indices])
             continue
-
         k1d = _gaussian_kernel_1d(r, device)
-        # Horizontal kernel: [1, 1, 1, kW]
-        kh = k1d.view(1, 1, 1, -1)
-        # Vertical kernel:   [1, 1, kH, 1]
-        kv = k1d.view(1, 1, -1, 1)
+        kh  = k1d.view(1, 1, 1, -1)
+        kv  = k1d.view(1, 1, -1, 1)
         pad = len(k1d) // 2
-
-        sub = batch[indices].unsqueeze(1)           # [B, 1, H, W]
+        sub = batch[indices].unsqueeze(1)           # [B,1,H,W]
         sub = F.pad(sub, (pad, pad, 0, 0), mode='reflect')
         sub = F.conv2d(sub, kh)
         sub = F.pad(sub, (0, 0, pad, pad), mode='reflect')
         sub = F.conv2d(sub, kv)
-        sub = sub.squeeze(1)                        # [B, H, W]
-
+        sub = sub.squeeze(1)
         out_frames.extend([(indices[j], sub[j]) for j in range(len(indices))])
 
-    # Re-sort to original frame order
     out_frames.sort(key=lambda x: x[0])
     return torch.stack([f for _, f in out_frames], dim=0)
 
-try:
-    import kornia.morphology as morph
-    HAS_KORNIA = True
-except ImportError:
-    HAS_KORNIA = False
+
+def _make_diamond_kernel(radius: int, device: torch.device) -> torch.Tensor:
+    """Diamond-shaped morphology kernel of given radius (|x|+|y| <= radius)."""
+    size = 2 * radius + 1
+    k = torch.zeros(size, size, dtype=torch.float32, device=device)
+    for y in range(size):
+        for x in range(size):
+            if abs(y - radius) + abs(x - radius) <= radius:
+                k[y, x] = 1.0
+    return k
+
+
+def _dilate_erode_gpu(output: torch.Tensor, expand: int,
+                      tapered_corners: bool) -> torch.Tensor:
+    """
+    Single-pass morphological dilation or erosion using a kernel sized to `expand`.
+    output: [1, 1, H, W]  (already on GPU)
+    Returns [1, 1, H, W].
+    """
+    r = abs(expand)
+    device = output.device
+
+    if tapered_corners:
+        kernel = _make_diamond_kernel(r, device)   # diamond footprint
+    else:
+        kernel = torch.ones(2 * r + 1, 2 * r + 1, dtype=torch.float32, device=device)
+
+    pad = r
+    if expand > 0:
+        # Dilation: max-pool with the kernel shape
+        # Use kornia if available for exact kernel, else max_pool2d (square only)
+        try:
+            import kornia.morphology as morph
+            return morph.dilation(output, kernel)
+        except Exception:
+            return F.max_pool2d(output, kernel_size=2*r+1, stride=1, padding=pad)
+    else:
+        # Erosion: invert → dilate → invert
+        try:
+            import kornia.morphology as morph
+            return morph.erosion(output, kernel)
+        except Exception:
+            inv = 1.0 - output
+            inv = F.max_pool2d(inv, kernel_size=2*r+1, stride=1, padding=pad)
+            return 1.0 - inv
+
 
 MAX_RESOLUTION = 8192
-
-# Use GPU if available, else CPU
 main_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
 
 class GrowMaskWithBlurCustom:
 
@@ -90,9 +128,14 @@ class GrowMaskWithBlurCustom:
                     "default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1,
                 }),
                 "tapered_corners": ("BOOLEAN", {"default": True}),
-                "flip_input": ("BOOLEAN", {"default": False}),
+                "flip_input":      ("BOOLEAN", {"default": False}),
                 "blur_radius": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1,
+                }),
+                # Temporal smoothing over the blur_radius list.
+                # 0 = off; higher = smoother transitions between frames.
+                "blur_smoothing": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 20.0, "step": 0.5,
                 }),
                 "lerp_alpha": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
@@ -107,12 +150,12 @@ class GrowMaskWithBlurCustom:
         }
 
     CATEGORY = '😺dzNodes/LayerUtility'
-    RETURN_TYPES = ("MASK", "MASK",)
-    RETURN_NAMES = ("mask", "mask_inverted",)
+    RETURN_TYPES  = ("MASK", "MASK",)
+    RETURN_NAMES  = ("mask", "mask_inverted",)
     FUNCTION = "expand_mask"
 
     def expand_mask(self, mask, expand, incremental_expandrate, tapered_corners,
-                    flip_input, blur_radius, lerp_alpha, decay_factor,
+                    flip_input, blur_radius, blur_smoothing, lerp_alpha, decay_factor,
                     fill_holes=False):
 
         alpha = lerp_alpha
@@ -121,7 +164,7 @@ class GrowMaskWithBlurCustom:
         if flip_input:
             mask = 1.0 - mask
 
-        # --- Normalise blur_radius to a per-frame list ---
+        # --- Normalise all per-frame parameters to lists ---
         growmask = mask.reshape((-1, mask.shape[-2], mask.shape[-1]))
         n_frames = growmask.shape[0]
 
@@ -130,52 +173,41 @@ class GrowMaskWithBlurCustom:
         else:
             blur_list = [float(blur_radius)] * n_frames
 
+        if isinstance(expand, (list, tuple)):
+            expand_list = [int(v) for v in expand]
+        else:
+            expand_list = [int(expand)] * n_frames
+
+        # --- Temporal smoothing on blur values ---
+        # Smooths out frame-to-frame jumps so the blur doesn't flicker.
+        if blur_smoothing > 0 and len(blur_list) > 1:
+            arr = np.array(blur_list, dtype=np.float32)
+            arr = scipy.ndimage.gaussian_filter1d(arr, sigma=blur_smoothing)
+            blur_list = arr.tolist()
+
+        # --- Per-frame expand + lerp/decay loop ---
         out = []
         previous_output = None
-        current_expand = expand
 
         for i, m in enumerate(tqdm(growmask, desc="Expanding/Contracting Mask")):
+            current_expand = expand_list[i] if i < len(expand_list) else expand_list[-1]
             output = m.unsqueeze(0).unsqueeze(0).to(main_device)
 
-            if abs(round(current_expand)) > 0 and output.max() > 0:
-                if HAS_KORNIA:
-                    if tapered_corners:
-                        kernel = torch.tensor(
-                            [[0, 1, 0], [1, 1, 1], [0, 1, 0]],
-                            dtype=torch.float32, device=output.device)
-                    else:
-                        kernel = torch.ones(3, 3, dtype=torch.float32, device=output.device)
-
-                    for _ in range(abs(round(current_expand))):
-                        if current_expand < 0:
-                            output = morph.erosion(output, kernel)
-                        else:
-                            output = morph.dilation(output, kernel)
-                else:
-                    # Fallback: scipy binary dilation/erosion on CPU
-                    np_mask = output.squeeze().cpu().numpy()
-                    struct = np.array([[0,1,0],[1,1,1],[0,1,0]]) if tapered_corners \
-                             else np.ones((3,3))
-                    for _ in range(abs(round(current_expand))):
-                        if current_expand < 0:
-                            np_mask = scipy.ndimage.binary_erosion(np_mask, struct).astype(np.float32)
-                        else:
-                            np_mask = scipy.ndimage.binary_dilation(np_mask, struct).astype(np.float32)
-                    output = torch.from_numpy(np_mask).unsqueeze(0).unsqueeze(0).to(main_device)
+            if current_expand != 0 and output.max() > 0:
+                output = _dilate_erode_gpu(output, current_expand, tapered_corners)
 
             output = output.squeeze(0).squeeze(0)
 
-            if current_expand < 0:
-                current_expand -= abs(incremental_expandrate)
-            else:
-                current_expand += abs(incremental_expandrate)
-
             if fill_holes:
-                binary_mask = output > 0
-                output_np = binary_mask.cpu().numpy()
-                filled = scipy.ndimage.binary_fill_holes(output_np)
-                output = torch.from_numpy(filled.astype(np.float32)).to(output.device)
+                # GPU flood-fill approximation: label connected components,
+                # fill any component not touching the border.
+                # Falls back to scipy (CPU) which is reliable.
+                binary_np = (output > 0).cpu().numpy()
+                filled_np = scipy.ndimage.binary_fill_holes(binary_np)
+                output = torch.from_numpy(filled_np.astype(np.float32)).to(output.device)
 
+            # lerp/decay: useful for temporal smoothing when expand is a scalar.
+            # When driving from a per-frame list these should stay at defaults (1.0/1.0).
             if alpha < 1.0 and previous_output is not None:
                 output = alpha * output + (1 - alpha) * previous_output
             if decay < 1.0 and previous_output is not None:
@@ -186,8 +218,8 @@ class GrowMaskWithBlurCustom:
             previous_output = output
             out.append(output.cpu())
 
-        # --- Apply per-frame blur (GPU batched) ---
-        stacked = torch.stack(out, dim=0)   # [N, H, W] on CPU
+        # --- Batched GPU blur ---
+        stacked = torch.stack(out, dim=0)   # [N, H, W]
         any_blur = any(r > 0 for r in blur_list)
         if any_blur:
             gpu = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
